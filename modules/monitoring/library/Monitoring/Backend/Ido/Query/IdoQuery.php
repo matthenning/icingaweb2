@@ -492,11 +492,103 @@ abstract class IdoQuery extends DbQuery
         return $this;
     }
 
+    /**
+     * Create and return a sub-query filter for the given filter expression
+     *
+     * @param   FilterExpression    $filter
+     * @param   string              $target
+     *
+     * @return  FilterExpression
+     *
+     * @throws  QueryException
+     */
+    protected function createSubQueryFilter(FilterExpression $filter, $target)
+    {
+        $primaryGroupBase = key($this->groupBase);
+        if ($primaryGroupBase === null) {
+            throw new QueryException('%s has no primary group base', get_class($this));
+        }
+        // TODO: Don't use the columnMap for this, but a different property
+        if (! isset($this->columnMap[$primaryGroupBase]['object_id'])) {
+            throw new QueryException('%s has no object_id for its primary group base', get_class($this));
+        }
+
+        $realQueryNames = [  // TODO: Improve/replace this, somehow (Generic, please?)
+            'hostgroups'    => 'hostgroup',
+            'services'      => 'servicestatus'
+        ];
+        $subQuery = $this->createSubQuery($realQueryNames[$target]);
+        $subQuery->setIsSubQuery();
+
+        // TODO: Again, not the columnMap!
+        if (! isset($subQuery->columnMap[$primaryGroupBase]['object_id'])) {
+            throw new QueryException('%s has no object_id for the parents primary group base', get_class($subQuery));
+        } else {
+            $subQuery->requireVirtualTable($primaryGroupBase);
+        }
+
+        $zendSelect = $subQuery->select();
+        foreach ($zendSelect->getPart($zendSelect::FROM) as $correlationName => $joinOptions) {
+            if (isset($joinOptions['joinCondition'])) {
+                $joinOptions['joinCondition'] = preg_replace(
+                    '/(?<=^|\s)\w+(?=\.)/',
+                    'sub_$0',
+                    $joinOptions['joinCondition']
+                );
+            }
+
+            $name = ['sub_' . $correlationName => $joinOptions['tableName']];
+            switch ($joinOptions['joinType']) {
+                case $zendSelect::FROM:
+                    $zendSelect->from($name);
+                    break;
+                case $zendSelect::INNER_JOIN:
+                    $zendSelect->joinInner($name, $joinOptions['joinCondition'], null);
+                    break;
+                case $zendSelect::LEFT_JOIN:
+                    $zendSelect->joinLeft($name, $joinOptions['joinCondition'], null);
+                    break;
+                default:
+                    // TODO: Add support for other join types if required?
+                    throw new QueryException(
+                        'Unsupported join type %s. Cannot create subquery filter.',
+                        $joinOptions['joinType']
+                    );
+            }
+        }
+
+        $filter->setColumn(preg_replace(
+            '/(?<=^|\s)\w+(?=\.)/',
+            'sub_$0',
+            $subQuery->aliasToColumnName($filter->getColumn())
+        ));
+        $filter = $filter->andFilter(Filter::where(
+            preg_replace(
+                '/(?<=^|\s)\w+(?=\.)/',
+                'sub_$0',
+                // TODO: Not...
+                $subQuery->columnMap[$primaryGroupBase]['object_id']
+            ),
+            // TODO: :'(
+            new Zend_Db_Expr($this->columnMap[$primaryGroupBase]['object_id']))
+        );
+        $subQuery->setFilter($filter);
+
+        // EXISTS is the column name because without any column $this->isCustomVar() fails badly otherwise.
+        // Additionally it bypasses the non-required optimizations made by our filter rendering implementation.
+        return new FilterExpression('EXISTS', '', new Zend_Db_Expr($subQuery));
+    }
+
     protected function requireFilterColumns(Filter $filter)
     {
         if ($filter instanceof FilterExpression) {
             if ($filter->getExpression() === '*') {
                 return; // Wildcard only filters are ignored so stop early here to avoid joining a table for nothing
+            }
+
+            $filterTarget = $this->aliasToTableName($filter->getColumn());
+            if (in_array($filterTarget, $this->groupOrigin, true)) {
+                return $this->createSubQueryFilter($filter, $filterTarget);
             }
 
             $alias = $filter->getColumn();
@@ -519,8 +611,12 @@ abstract class IdoQuery extends DbQuery
 
             $filter->setColumn($column);
         } else {
-            foreach ($filter->filters() as $filter) {
-                $this->requireFilterColumns($filter);
+            foreach ($filter->filters() as $child) {
+                $replacement = $this->requireFilterColumns($child);
+                if ($replacement !== null) {
+                    // setId($child->getId()) is performed because replaceById() doesn't already do it
+                    $filter->replaceById($child->getId(), $replacement->setId($child->getId()));
+                }
             }
         }
     }
@@ -531,8 +627,7 @@ abstract class IdoQuery extends DbQuery
     public function addFilter(Filter $filter)
     {
         $filter = clone $filter;
-        $this->requireFilterColumns($filter);
-        return parent::addFilter($filter);
+        return parent::addFilter($this->requireFilterColumns($filter) ?: $filter);
     }
 
     public function where($condition, $value = null)
