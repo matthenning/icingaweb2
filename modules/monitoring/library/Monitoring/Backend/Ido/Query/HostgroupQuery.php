@@ -18,6 +18,12 @@ class HostgroupQuery extends IdoQuery
 
     protected $groupOrigin = array('members');
 
+    protected $subQueryTargets = array(
+        'members'       => 'hoststatus',
+        'services'      => 'servicestatus',
+        'servicegroups' => 'servicegroup'
+    );
+
     protected $columnMap = array(
         'hostgroups' => array(
             'hostgroup'         => 'hgo.name1 COLLATE latin1_general_ci',
@@ -222,5 +228,31 @@ class HostgroupQuery extends IdoQuery
             'ss.service_object_id = so.object_id',
             array()
         );
+    }
+
+    public function joinSubQuery(IdoQuery $query, $name)
+    {
+        if ($name === 'hoststatus') {
+            if (! $this->hasJoinedVirtualTable('members')) {
+                $this->joinVirtualTable('members');
+            }
+
+            return ['ho.object_id', 'hgm.host_object_id'];
+        } elseif ($name === 'servicestatus') {
+            if (! $this->hasJoinedVirtualTable('members')) {
+                $this->joinVirtualTable('members');
+            }
+
+            return ['s.host_object_id', 'hgm.host_object_id'];
+        } elseif ($name === 'servicegroup') {
+            if (! $this->hasJoinedVirtualTable('members')) {
+                $this->joinVirtualTable('members');
+            }
+
+            $query->joinVirtualTable('members');
+            return ['so.host_object_id', 'hgm.host_object_id'];
+        }
+
+        return parent::joinSubQuery($query, $name);
     }
 }

@@ -23,6 +23,11 @@ class ServicestatusQuery extends IdoQuery
      */
     protected $groupOrigin = array('hostgroups', 'servicegroups');
 
+    protected $subQueryTargets = array(
+        'hostgroups'    => 'hostgroup',
+        'servicegroups' => 'servicegroup'
+    );
+
     /**
      * {@inheritdoc}
      */
@@ -410,5 +415,18 @@ class ServicestatusQuery extends IdoQuery
         } else {
             parent::registerGroupColumns($alias, $table, $groupedColumns, $groupedTables);
         }
+    }
+
+    public function joinSubQuery(IdoQuery $query, $name)
+    {
+        if ($name === 'hostgroup') {
+            $query->joinVirtualTable('members');
+            return ['hgm.host_object_id', 's.host_object_id'];
+        } elseif ($name === 'servicegroup') {
+            $query->joinVirtualTable('services');
+            return ['s.service_object_id', 'so.object_id'];
+        }
+
+        return parent::joinSubQuery($query, $name);
     }
 }

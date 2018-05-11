@@ -12,6 +12,11 @@ class ServicegroupQuery extends IdoQuery
 
     protected $groupOrigin = array('members');
 
+    protected $subQueryTargets = array(
+        'members'       => 'servicestatus',
+        'hostgroups'    => 'hostgroup'
+    );
+
     protected $allowCustomVars = true;
 
     protected $columnMap = array(
@@ -177,5 +182,44 @@ class ServicegroupQuery extends IdoQuery
             'ss.service_object_id = so.object_id',
             array()
         );
+    }
+
+    public function joinSubQuery(IdoQuery $query, $name)
+    {
+        $correct = false;  // TODO: Is `true` probably not better in terms of results? (Thought it is, but...)
+
+        if ($name === 'hostgroup') {
+            if ($correct) {
+                $query->joinVirtualTable('servicegroups');
+                return ['sg.servicegroup_object_id', 'sgo.object_id'];
+            }
+
+            if (! $correct) {
+                // Joining the services in the root query seems to be the cheapest solution (even for COUNT queries)
+                if (! $this->hasJoinedVirtualTable('services')) {
+                    $this->joinVirtualTable('services');
+                }
+
+                $query->joinVirtualTable('members');
+                return ['hgm.host_object_id', 's.host_object_id'];
+            }
+        } elseif ($name === 'servicestatus') {
+            if ($correct) {
+                $query->joinVirtualTable('servicegroups');
+                return ['sg.servicegroup_object_id', 'sgo.object_id'];
+            }
+
+            if (! $correct) {
+                if (! $this->hasJoinedVirtualTable('services')) {
+                    $this->joinVirtualTable('services');
+                }
+
+                // TODO: It should be possible to differ between hosts and services, otherwise this won't work
+                //return ['so.object_id', 'sgm.service_object_id'];
+                return ['s.host_object_id', 's.host_object_id'];  // I'm not even sure if this should work...
+            }
+        }
+
+        return parent::joinSubQuery($query, $name);
     }
 }
