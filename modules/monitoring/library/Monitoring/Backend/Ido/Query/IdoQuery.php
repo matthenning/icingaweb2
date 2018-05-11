@@ -11,6 +11,7 @@ use Icinga\Data\Db\DbQuery;
 use Icinga\Data\Filter\Filter;
 use Icinga\Data\Filter\FilterExpression;
 use Icinga\Exception\IcingaException;
+use Icinga\Exception\NotImplementedError;
 use Icinga\Exception\ProgrammingError;
 use Icinga\Exception\QueryException;
 use Icinga\Web\Session;
@@ -148,6 +149,13 @@ abstract class IdoQuery extends DbQuery
      * @var array
      */
     protected $groupOrigin = array();
+
+    /**
+     * Map of table names to query names for which to create subquery filters
+     *
+     * @var array
+     */
+    protected $subQueryTargets = array();
 
     /**
      * The primary key column for the instances table
@@ -493,42 +501,42 @@ abstract class IdoQuery extends DbQuery
     }
 
     /**
+     * Prepare the given query so that it can be linked to the parent
+     *
+     * @param   IdoQuery    $query
+     * @param   string      $name
+     *
+     * @return  array       The first value is their, the second our key column
+     *
+     * @throws  NotImplementedError     In case the given query is unknown
+     */
+    public function joinSubQuery(IdoQuery $query, $name)
+    {
+        throw new NotImplementedError('Query "%s" is unknown', $name);
+    }
+
+    /**
      * Create and return a sub-query filter for the given filter expression
      *
      * @param   FilterExpression    $filter
-     * @param   string              $target
+     * @param   string              $queryName
      *
      * @return  FilterExpression
      *
      * @throws  QueryException
      */
-    protected function createSubQueryFilter(FilterExpression $filter, $target)
+    protected function createSubQueryFilter(FilterExpression $filter, $queryName)
     {
-        $primaryGroupBase = key($this->groupBase);
-        if ($primaryGroupBase === null) {
-            throw new QueryException('%s has no primary group base', get_class($this));
-        }
-        // TODO: Don't use the columnMap for this, but a different property
-        if (! isset($this->columnMap[$primaryGroupBase]['object_id'])) {
-            throw new QueryException('%s has no object_id for its primary group base', get_class($this));
-        }
-
-        $realQueryNames = [  // TODO: Improve/replace this, somehow (Generic, please?)
-            'hostgroups'    => 'hostgroup',
-            'services'      => 'servicestatus'
-        ];
-        $subQuery = $this->createSubQuery($realQueryNames[$target]);
+        $subQuery = $this->createSubQuery($queryName);
         $subQuery->setIsSubQuery();
 
-        // TODO: Again, not the columnMap!
-        if (! isset($subQuery->columnMap[$primaryGroupBase]['object_id'])) {
-            throw new QueryException('%s has no object_id for the parents primary group base', get_class($subQuery));
-        } else {
-            $subQuery->requireVirtualTable($primaryGroupBase);
-        }
+        list($theirs, $ours) = $this->joinSubQuery($subQuery, $queryName);
 
         $zendSelect = $subQuery->select();
-        foreach ($zendSelect->getPart($zendSelect::FROM) as $correlationName => $joinOptions) {
+        $fromPart = $zendSelect->getPart($zendSelect::FROM);
+        $zendSelect->reset($zendSelect::FROM);
+
+        foreach ($fromPart as $correlationName => $joinOptions) {
             if (isset($joinOptions['joinCondition'])) {
                 $joinOptions['joinCondition'] = preg_replace(
                     '/(?<=^|\s)\w+(?=\.)/',
@@ -563,15 +571,9 @@ abstract class IdoQuery extends DbQuery
             $subQuery->aliasToColumnName($filter->getColumn())
         ));
         $filter = $filter->andFilter(Filter::where(
-            preg_replace(
-                '/(?<=^|\s)\w+(?=\.)/',
-                'sub_$0',
-                // TODO: Not...
-                $subQuery->columnMap[$primaryGroupBase]['object_id']
-            ),
-            // TODO: :'(
-            new Zend_Db_Expr($this->columnMap[$primaryGroupBase]['object_id']))
-        );
+            preg_replace('/(?<=^|\s)\w+(?=\.)/', 'sub_$0', $theirs),
+            new Zend_Db_Expr($ours)
+        ));
         $subQuery->setFilter($filter);
 
         // EXISTS is the column name because without any column $this->isCustomVar() fails badly otherwise.
@@ -586,12 +588,17 @@ abstract class IdoQuery extends DbQuery
                 return; // Wildcard only filters are ignored so stop early here to avoid joining a table for nothing
             }
 
-            $filterTarget = $this->aliasToTableName($filter->getColumn());
-            if (in_array($filterTarget, $this->groupOrigin, true)) {
-                return $this->createSubQueryFilter($filter, $filterTarget);
+            $alias = $filter->getColumn();
+
+            $virtualTable = $this->aliasToTableName($alias);
+            if (isset($this->subQueryTargets[$virtualTable])) {
+                try {
+                    return $this->createSubQueryFilter($filter, $this->subQueryTargets[$virtualTable]);
+                } catch (NotImplementedError $e) {
+                    // We don't want to create subquery filters in all cases
+                }
             }
 
-            $alias = $filter->getColumn();
             $this->requireColumn($alias);
 
             if ($this->isCustomvar($alias)) {
