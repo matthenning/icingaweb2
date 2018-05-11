@@ -565,6 +565,13 @@ abstract class IdoQuery extends DbQuery
             }
         }
 
+        $groups = [];
+        foreach ($subQuery->getGroup() as $groupColumn) {
+            $groups[] = preg_replace('/(?<=^|\s)\w+(?=\.)/', 'sub_$0', $groupColumn);
+        }
+        // Clearing the rules prevents the wrong aliased ones from re-appearing
+        $subQuery->clearGroupingRules()->group($groups);
+
         $filter = clone $filter;
         $filter->setColumn(preg_replace(
             '/(?<=^|\s)\w+(?=\.)/',
