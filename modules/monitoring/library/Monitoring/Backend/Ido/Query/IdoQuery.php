@@ -565,6 +565,7 @@ abstract class IdoQuery extends DbQuery
             }
         }
 
+        $filter = clone $filter;
         $filter->setColumn(preg_replace(
             '/(?<=^|\s)\w+(?=\.)/',
             'sub_$0',
